@@ -1,11 +1,10 @@
-
 import os
 import requests
 import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qs
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,7 +20,7 @@ if not API_KEY or not SERVER:
 headers = {"Authorization": f"Bearer {API_KEY}"}
 
 def fetch_campaigns():
-    since_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S')
+    since_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%dT%H:%M:%S')
     url = f'{BASE_URL}/campaigns'
     params = {'since_send_time': since_date, 'count': 100, 'offset': 0}
     campaigns = []
@@ -38,9 +37,6 @@ def fetch_campaigns():
     return campaigns
 
 def fetch_campaign_content(campaign_id):
-    """
-    Fetch the HTML content of a campaign.
-    """
     url = f"{BASE_URL}/campaigns/{campaign_id}/content"
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
@@ -51,10 +47,6 @@ def fetch_campaign_content(campaign_id):
         return ""
 
 def parse_links_from_html(html):
-    """
-    Parse HTML content to extract links (<a href="...">) in order.
-    Returns a list of URLs.
-    """
     soup = BeautifulSoup(html, "html.parser")
     return [a["href"] for a in soup.find_all("a", href=True)]
 
@@ -63,38 +55,55 @@ def fetch_click_details(campaign_id):
     Fetch click performance details for the campaign.
     """
     url = f"{BASE_URL}/reports/{campaign_id}/click-details"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
+    all_click_details = []
+    offset = 0
+    while True:
+        response = requests.get(url, headers=headers, params={'count': 1000, 'offset': offset})
+        if response.status_code != 200:
+            print(f"Failed to fetch click details for campaign {campaign_id}. Status: {response.status_code}")
+            break
+        
         data = response.json()
-        return data.get("urls_clicked", [])
-    else:
-        print(f"Failed to fetch click details for campaign {campaign_id}. Status: {response.status_code}")
-        return []
+        click_details = data.get("urls_clicked", [])
+        if not click_details:
+            break
+        
+        all_click_details.extend(click_details)
+        if len(click_details) < 1000:  # No more pages to retrieve
+            break
+        offset += 1000
+    
+    return all_click_details
 
 def normalize_url(url):
     """
-    Normalize the URL by lowercasing the scheme and netloc,
-    stripping query parameters, and removing any trailing slashes.
+    Normalize the URL by lowercasing the scheme and netloc, removing 'www.',
+    stripping query parameters except essential ones, and removing any trailing slashes.
     """
     try:
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
+        netloc = parsed.netloc.lower().lstrip('www.')
         path = parsed.path.rstrip('/')
-        return f"{scheme}://{netloc}{path}"
-    except Exception:
+        
+        # Preserve query parameters only if they are critical
+        essential_params = ['id', 'utm_source', 'utm_medium', 'utm_campaign']
+        query = parse_qs(parsed.query)
+        filtered_query = {k: v for k, v in query.items() if k in essential_params}
+        query_str = "&".join(f"{k}={v[0]}" for k, v in filtered_query.items() if v)
+
+        # Reconstruct the URL with only essential parameters
+        filtered_url = urlunparse((scheme, netloc, path, '', query_str, ''))
+        return filtered_url
+    except Exception as e:
+        print(f"Failed to normalize URL {url}: {e}")
         return url
 
+
 def should_exclude_link(link):
-    """
-    Return True if the link's domain (ignoring any leading 'www.') is in the list of excluded domains.
-    """
     try:
         parsed = urlparse(link)
-        domain = parsed.netloc.lower()
-        # Remove the leading "www." if present
-        if domain.startswith("www."):
-            domain = domain[4:]
+        domain = parsed.netloc.lower().replace("www.", "")
         excluded_domains = {
             "thedp.com",
             "34st.com",
@@ -118,8 +127,8 @@ def build_click_map_for_campaign(campaign):
     """
     For a given campaign, build a custom click map by:
       1. Extracting the ordered links from the campaign HTML.
-      2. Merging with the click details data using normalized URLs.
-      3. Skipping any links that are mail-to or that start with any excluded prefixes.
+      2. Merging with the click details data using improved URL matching.
+      3. Skipping any links that are mail-to or that should be excluded.
     """
     campaign_id = campaign.get("id")
     campaign_name = campaign.get("settings", {}).get("title", "N/A")
@@ -129,10 +138,8 @@ def build_click_map_for_campaign(campaign):
     if not html_content:
         return None
 
-    # Extract URLs in the order they appear
     ordered_links = parse_links_from_html(html_content)
     
-    # Remove duplicates and skip merge tags
     seen = set()
     ordered_links_unique = []
     for link in ordered_links:
@@ -141,7 +148,6 @@ def build_click_map_for_campaign(campaign):
         ordered_links_unique.append(link)
         seen.add(link)
     
-    # Get click details (tracked metrics)
     click_details = fetch_click_details(campaign_id)
     click_map_data = {}
     for detail in click_details:
@@ -152,15 +158,15 @@ def build_click_map_for_campaign(campaign):
     result = []
     order_counter = 0
     for url in ordered_links_unique:
-        # Skip mail-to links and any links that start with an excluded prefix
         if url.lower().startswith("mailto:") or should_exclude_link(url):
             continue
 
         order_counter += 1
         norm_html_url = normalize_url(url)
         detail = click_map_data.get(norm_html_url)
+        
         if not detail:
-            # Fuzzy matching if no exact normalized match is found
+            # Improved Fuzzy Matching Logic
             for tracked_norm, d in click_map_data.items():
                 if norm_html_url in tracked_norm or tracked_norm in norm_html_url:
                     detail = d
@@ -180,15 +186,10 @@ def build_click_map_for_campaign(campaign):
     return result
 
 def build_all_click_maps():
-    """
-    Process all campaigns to build custom click maps,
-    but only include those with "DP Daybreak" in the campaign name.
-    """
     campaigns = fetch_campaigns()
     all_maps = []
     for campaign in campaigns:
         campaign_name = campaign.get('settings', {}).get('title', '')
-        # Only process campaigns with "DP Daybreak" in their name
         if "DP Daybreak" not in campaign_name:
             continue
         campaign_map = build_click_map_for_campaign(campaign)
@@ -199,7 +200,6 @@ def build_all_click_maps():
 if __name__ == "__main__":
     all_click_maps = build_all_click_maps()
     
-    # Convert the results into a DataFrame for analysis or CSV export
     df = pd.DataFrame(all_click_maps)
     print(df)
     
