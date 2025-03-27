@@ -6,9 +6,12 @@ import json          # For reading and writing JSON files (if needed)
 import pandas as pd   # For data manipulation and analysis
 import matplotlib.pyplot as plt  # For generating visualizations (graphs, charts, etc.)
 
-# Ensure plots are displayed properly
-plt.style.use('seaborn')
+from ad_performance_analyzer import AdPerformanceAnalyzer
 
-# Check if the 'data' folder exists
-if not os.path.exists('data'):
-    os.makedirs('data')
+analyzer = AdPerformanceAnalyzer("custom_click_map.csv")
+
+# Generate all four graphs
+analyzer.plot_clicks_by_position()
+analyzer.plot_unique_clicks_by_position()
+analyzer.plot_click_percentage_by_position()
+analyzer.plot_unique_click_percentage_by_position()
