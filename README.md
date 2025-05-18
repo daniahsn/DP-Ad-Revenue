@@ -95,22 +95,6 @@ python scripts/run_full_pipeline.py --filter "DP Daybreak" --output-dir outputs
 
 ---
 
-### Building Click Maps Only
-
-```bash
-python scripts/build_click_maps.py --filter "DP Daybreak" --output click_map_data.csv
-```
-
----
-
-### Analyzing Performance Only
-
-```bash
-python scripts/analyze_performance.py --input click_map_data.csv --output-dir outputs
-```
-
----
-
 ## 📊 Understanding the Results
 
 ### Data Files
@@ -152,10 +136,3 @@ The codebase is designed with clean separation of concerns:
 - `PlotGenerator`: Creates general-purpose visualizations  
 - `ChartCreator`: Builds specialized charts for ad analysis  
 
----
-
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-"""
